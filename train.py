@@ -9,14 +9,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from model import MusicVAE
-from generate_dataset import inputs, test_samples
+from generate_dataset import inputs, targets, test_samples, mappings_length
 
 
 def reconstruction_loss(output, target):
     return F.cross_entropy(output, target)
 
 
-def kl_divergence_loss(mu, sigma, free_bits=100):
+def kl_divergence_loss(mu, sigma, free_bits=33.3):
     kl_loss = -0.5 * torch.sum(
         1 + torch.log(sigma.pow(2)) - mu.pow(2) - sigma.pow(2), dim=1
     )
@@ -32,6 +32,16 @@ def beta_growth(epoch):
     return (end - start) / (1 + math.exp(-k * (epoch - x0))) + start
 
 
+def calculate_accuracy(output, target):
+    output = torch.argmax(output, dim=2)
+    target = torch.argmax(target, dim=2)
+
+    # print("output: ", output)
+    # print("target: ", target)
+    accuracy = torch.mean((output == target).float())
+    return accuracy.item()
+
+
 # 訓練函數
 def train_vae(
     model,
@@ -42,6 +52,7 @@ def train_vae(
     device,
     teacher_forcing=True,
     train=True,
+    autoencoder=True,
 ):
     model.to(device)
     model.train()
@@ -63,28 +74,33 @@ def train_vae(
         tot_KLDIV_loss = 0
         total_accuracy = 0
 
-        if epoch >= 5:
-            teacher_forcing = False
+        # if epoch >= 10:
+        #     teacher_forcing = False
 
         for x, y in tqdm(dataloader):
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
 
-            output, mu, sigma = model(
-                x, y, teacher_forcing=teacher_forcing, train=train
-            )
+            if autoencoder:
+                output = model(
+                    x, y, teacher_forcing=teacher_forcing, train=train, epoch=epoch
+                )
+            else:
+                output, mu, sigma = model(
+                    x, y, teacher_forcing=teacher_forcing, train=train
+                )
 
             # 計算重構損失和KL散度損失
             recon_loss = reconstruction_loss(output, y)
-            kl_loss = kl_divergence_loss(mu, sigma)
+
+            if autoencoder:
+                kl_loss = torch.zeros(1).cuda()
+            else:
+                kl_loss = kl_divergence_loss(mu, sigma)
             loss = recon_loss + beta * kl_loss
 
-            # 印出準確度
-            output_max_indices = torch.argmax(output, dim=2)
-            y_max_indices = torch.argmax(y, dim=2)
-            accuracy = np.mean(
-                (output_max_indices.cpu().numpy() == y_max_indices.cpu().numpy())
-            )
+            # 計算準確度
+            accuracy = calculate_accuracy(output, y)
 
             # 反向傳播
             loss.backward()
@@ -112,12 +128,15 @@ def train_vae(
             f"Epoch {epoch + 1}/{num_epochs}, Loss: {total_loss / len(dataloader)}, Accuracy: {total_accuracy / len(dataloader)}"
         )
 
+        if epoch % 10 == 0:
+            torch.save(model.state_dict(), f"./model weight/epoch{epoch}.pth")
+
     return recons_loss, KLDIV_loss, tot_loss, total_accuracy
 
 
 # 準備數據
-def prepare_data(train_data_tensor, test_data_tensor, batch_size):
-    train_dataset = TensorDataset(train_data_tensor, train_data_tensor)
+def prepare_data(train_data_tensor, target_data_tensor, test_data_tensor, batch_size):
+    train_dataset = TensorDataset(train_data_tensor, target_data_tensor)
     test_dataset = TensorDataset(test_data_tensor, test_data_tensor)
     dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     eval_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
@@ -126,21 +145,21 @@ def prepare_data(train_data_tensor, test_data_tensor, batch_size):
 
 if __name__ == "__main__":
     # 設定參數
-    input_dim = 130
+    input_dim = mappings_length
     lstm_hidden_dim = 512
-    latent_dim = 64
+    latent_dim = 32
     conductor_hidden_dim = 512
     conductor_output_dim = 256
     decoder_hidden_dim = 1024
     output_dim = input_dim
     batch_size = 32
-    num_epochs = 20
+    num_epochs = 50
     initial_learning_rate = 1e-3  # 初始學習率
     final_learning_rate = 1e-5  # 最終學習率
 
-    teacher_forcing = True
-    TRAIN = True
-
+    autoencoder = True
+    teacher_forcing = False
+    TRAIN = False
     # 確定使用的設備
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -155,6 +174,8 @@ if __name__ == "__main__":
         decoder_hidden_dim,
         output_dim,
         batch_size,
+        mappings_length,
+        autoencoder,
     )
     optimizer = optim.Adam(model.parameters(), lr=initial_learning_rate)
 
@@ -164,11 +185,16 @@ if __name__ == "__main__":
     data_tensor = inputs  # 這裡的inputs_tensor作為自動重建的輸入和目標
     data_tensor = torch.tensor(data_tensor, dtype=torch.float32)
 
+    target_tensor = targets
+    target_tensor = torch.tensor(target_tensor, dtype=torch.float32)
+
     test_tensor = test_samples[:256]
     test_tensor = torch.tensor(test_tensor, dtype=torch.float32)
 
     # 準備數據集和DataLoader
-    dataloader, eval_loader = prepare_data(data_tensor, test_tensor, batch_size)
+    dataloader, eval_loader = prepare_data(
+        data_tensor, target_tensor, test_tensor, batch_size
+    )
 
     # 訓練模型
     if TRAIN:
@@ -181,6 +207,7 @@ if __name__ == "__main__":
             device,
             teacher_forcing,
             train=TRAIN,
+            autoencoder=autoencoder,
         )
 
         # 儲存模型
@@ -197,28 +224,27 @@ if __name__ == "__main__":
         total_loss = 0
         for x, y in eval_loader:
             x, y = x.to(device), y.to(device)
-            output, mu, sigma = model(
-                x, y, teacher_forcing=teacher_forcing, train=TRAIN
-            )
+            if autoencoder:
+                output = model(
+                    x, y, teacher_forcing=teacher_forcing, train=TRAIN, epoch=None
+                )
+            else:
+                output, mu, sigma = model(
+                    x, y, teacher_forcing=teacher_forcing, train=TRAIN, epoch=None
+                )
 
-            # 找出模型預測的音符
-            output_max_indices = torch.argmax(output, dim=2)
-            y_max_indices = torch.argmax(y, dim=2)
-
+            # 計算重構損失和KL散度損失
             recon_loss = reconstruction_loss(output, y)
-            kl_loss = kl_divergence_loss(mu, sigma)
+
+            if autoencoder:
+                kl_loss = torch.zeros(1).cuda()
+            else:
+                kl_loss = kl_divergence_loss(mu, sigma)
             loss = recon_loss + kl_loss
 
             total_loss += loss.item()
 
-            # for i in range(len(output_max_indices)):
-            #     print(output_max_indices[i].cpu().numpy())
-            #     print(y_max_indices[i].cpu().numpy())
-            #     print()
-
-            accuracy = np.mean(
-                (output_max_indices.cpu().numpy() == y_max_indices.cpu().numpy())
-            )
+            accuracy = calculate_accuracy(output, y)
             total_accuracy += accuracy
 
         print(f"Accuracy: {total_accuracy / len(eval_loader)}")

@@ -1,6 +1,7 @@
 from music21 import corpus, note, converter, chord
 import json
 import os
+import random
 
 import torch
 import torch.nn.functional as F
@@ -78,14 +79,28 @@ def save_symbol(symbol, path):
         f.write(symbol)
 
 
-def create_mappings_to_json(mappings_path):
+def create_mappings_to_json(mappings_path, single_file_path):
+
+    # read bach.txt
+    with open(single_file_path, "r") as f:
+        symbol = f.read()
+
     mappings = {}
 
-    for i in range(128):
-        mappings[str(i)] = i
+    split_symbol = symbol.split()
 
-    mappings["r"] = 128
-    mappings["/"] = 129
+    split_symbol = list(set(split_symbol))
+
+    # sort the split_symbol without "r" and "/"
+    split_symbol = sorted([s for s in split_symbol if s != "r" and s != "/"])
+
+    # 便歷所有音符，並且把"r"以及"/"存在mappings的最後面
+    for i, s in enumerate(split_symbol):
+        if s != "r" and s != "/":
+            mappings[s] = i
+
+    mappings["r"] = len(mappings)
+    mappings["/"] = len(mappings)
 
     # save mappings to a file
     with open(mappings_path, "w") as f:
@@ -110,31 +125,62 @@ def convert_song_to_int(single_file_path, mappings_path):
     return symbol
 
 
-def generate_training_sequences(symbol, sequence_length):
+def data_augmentation(symbol, json_length):
+    random_number = random.randint(-3, 3)
+    random_prob = random.uniform(0, 1)
+
+    if random_prob >= 0.5:
+        if symbol + random_number >= json_length or symbol + random_number < 0:
+            augmented_symbol = symbol - random_number
+        else:
+            augmented_symbol = symbol + random_number
+    else:
+        augmented_symbol = symbol
+
+    return augmented_symbol
+
+
+def generate_training_sequences(symbol, sequence_length, mappings_path):
+    # read the length of json file
+    with open(mappings_path, "r") as f:
+        mappings = json.load(f)
+
+    json_length = len(mappings)
+
     # create input sequences and the corresponding outputs
     inputs = []
+    targets = []
 
-    for i in range(0, len(symbol) - sequence_length + 1, 32):
+    for i in range(0, len(symbol) - sequence_length + 1, 16):
         sequence = symbol[i : i + sequence_length]
+        targets.append(sequence)
+
+    for i in range(0, len(symbol) - sequence_length + 1, 16):
+        sequence = symbol[i : i + sequence_length]
+
+        # for j in range(len(sequence)):
+        #     sequence[j] = data_augmentation(sequence[j], json_length)
         inputs.append(sequence)
 
     # one hot encode inputs
-    inputs = F.one_hot(torch.tensor(inputs), num_classes=130).float()
+    inputs = F.one_hot(torch.tensor(inputs), num_classes=json_length).float()
+    targets = F.one_hot(torch.tensor(targets), num_classes=json_length).float()
 
     inputs = inputs.numpy()
     print("inputs shape:", inputs.shape)
 
-    train_amount = 4992
+    train_amount = 10016
     # train_amount = 1024
 
-    test_samples = inputs[train_amount:]
+    test_samples = targets[train_amount:]
     inputs = inputs[:train_amount]
+    targets = targets[:train_amount]
 
     print("輸入資料已處理完成 : ")
     print("inputs shape:", inputs.shape)
     print("test samples shape:", test_samples.shape)
 
-    return inputs, test_samples
+    return inputs, targets, test_samples
 
 
 CREATE_DATASET = False
@@ -144,6 +190,7 @@ symbol = []
 path = "./dataset/bach"
 single_file_path = "./dataset/bach/bach.txt"
 mappings_path = "./dataset/bach/mappings.json"
+mappings_length = len(json.load(open(mappings_path, "r")))
 
 new_song_delimiter = "/ " * SEQUENCE
 
@@ -164,8 +211,10 @@ if CREATE_DATASET:
     # save symbol to a file
     save_symbol(symbol, single_file_path)
 
-    create_mappings_to_json(mappings_path)
+    create_mappings_to_json(mappings_path, single_file_path)
 
 symbol = convert_song_to_int(single_file_path, mappings_path)
 
-inputs, test_samples = generate_training_sequences(symbol, SEQUENCE)
+inputs, targets, test_samples = generate_training_sequences(
+    symbol, SEQUENCE, mappings_path
+)

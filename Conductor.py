@@ -37,6 +37,10 @@ class ConductorRNN(nn.Module):
             size=(batch_size, 2, self.latent_dim), device=z.device
         )
 
+        # conductor_input = torch.randn(
+        #     size=(batch_size, 2, self.latent_dim), device=z.device, requires_grad=True
+        # )
+
         embeddings, _ = self.rnn(conductor_input, (h, c))
         embeddings = torch.unbind(embeddings, dim=1)
 
