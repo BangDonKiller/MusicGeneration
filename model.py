@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
-from Encoder import BidirectionalEncoder, AutoEncoder
+from Encoder import BidirectionalEncoder
 from Conductor import ConductorRNN
-from Decoder import BottomLevelDecoderRNN, AutoEncoder_DecoderRNN
-from generate_dataset import SEQUENCE
+from Decoder import BottomLevelDecoderRNN
 
 
 class MusicVAE(nn.Module):
@@ -17,63 +17,37 @@ class MusicVAE(nn.Module):
         conductor_output_dim,
         decoder_hidden_dim,
         output_dim,
-        batch_size,
-        mappings_length,
-        autoencoder,
+        note_size,
     ):
         super(MusicVAE, self).__init__()
 
-        self.batch_size = batch_size
-        self.mappings_length = mappings_length
-        self.autoencoder = autoencoder
+        self.embeddings = nn.ModuleList([nn.Embedding(i, input_dim) for i in note_size])
 
-        if self.autoencoder:
-            self.encoder = AutoEncoder(input_dim, lstm_hidden_dim, latent_dim)
-            self.decoder = AutoEncoder_DecoderRNN(
-                latent_dim, decoder_hidden_dim, output_dim
-            )
-        else:
-            self.encoder = BidirectionalEncoder(input_dim, lstm_hidden_dim, latent_dim)
-            self.conductor = ConductorRNN(
-                latent_dim, conductor_hidden_dim, conductor_output_dim
-            )
-            self.decoder = BottomLevelDecoderRNN(
-                conductor_hidden_dim, decoder_hidden_dim, output_dim
-            )
+        self.encoder = BidirectionalEncoder(input_dim, lstm_hidden_dim, latent_dim)
+        self.conductor = ConductorRNN(
+            latent_dim, conductor_hidden_dim, conductor_output_dim
+        )
+        self.decoder = BottomLevelDecoderRNN(
+            conductor_hidden_dim, decoder_hidden_dim, output_dim
+        )
 
-    def forward(self, x, y, teacher_forcing=True, train=True, epoch=None):
+    def forward(self, x, teacher_forcing=True):
 
-        if self.autoencoder:
-            z = self.encoder(x, self.batch_size)
-            output = self.decoder(
-                z,
-                length=SEQUENCE,
-                target=y,
-                batch_size=self.batch_size,
-                teacher_forcing=teacher_forcing,
-                training=train,
-                mappings_length=self.mappings_length,
-                epoch=epoch,
-            )
+        mu, sigma = self.encoder(x, self.embeddings)
+        z = mu + sigma * torch.randn_like(mu)
+        # c = self.conductor(z, batch_size=self.batch_size)
+        # output, ratio = self.decoder()
 
-            return output
-        else:
-            # 編碼器生成潛在向量的 μ 和 σ
-            mu, sigma = self.encoder(x, self.batch_size)
+        song = [o.max(-1)[-1] for o in output]
+        song = torch.stack(song).detach()
+        return output, song, mu, sigma
 
-            # 通過重參數化技巧從正態分佈中采樣
-            z = mu + sigma * torch.randn_like(mu)
+    def reconstruction_loss(self, predict, target):
+        loss = 0
+        for p, t in zip(predict, target):
+            for i in range(p.size(1)):
+                loss += F.cross_entropy(p[:, i], t[:, i])
+        return loss
 
-            # 指揮RNN生成嵌入向量
-            c = self.conductor(z, batch_size=self.batch_size)
-
-            output = self.decoder(
-                c,
-                length=SEQUENCE,
-                target=y,
-                batch_size=self.batch_size,
-                teacher_forcing=teacher_forcing,
-                training=train,
-                mappings_length=self.mappings_length,
-            )
-            return output, mu, sigma
+    def kl_divergence_loss(mu, sigma):
+        return -0.5 * torch.sum(1 + sigma - mu.pow(2) - sigma.pow(2))

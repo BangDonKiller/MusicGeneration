@@ -3,26 +3,17 @@ import torch.nn as nn
 import numpy as np
 import random
 
-from generate_dataset import SEQUENCE
+# from generate_dataset import SEQUENCE
 
 
 class BottomLevelDecoderRNN(nn.Module):
     def __init__(self, conductor_hidden_dim, hidden_dim, output_dim):
         super(BottomLevelDecoderRNN, self).__init__()
 
-        # if LSTM
         self.fc_init = nn.Linear(conductor_hidden_dim, hidden_dim * 4)
 
-        # if GRU
-        # self.fc_init = nn.Linear(conductor_hidden_dim, hidden_dim * 2)
-
-        # if LSTM
         self.rnn_1 = nn.LSTMCell(conductor_hidden_dim + output_dim, hidden_dim)
         self.rnn_2 = nn.LSTMCell(hidden_dim, hidden_dim)
-
-        # if GRU
-        # self.rnn_1 = nn.GRUCell(conductor_hidden_dim + output_dim, hidden_dim)
-        # self.rnn_2 = nn.GRUCell(hidden_dim, hidden_dim)
 
         self.fc_out = nn.Linear(hidden_dim, output_dim)
 
@@ -32,43 +23,39 @@ class BottomLevelDecoderRNN(nn.Module):
     def forward(
         self,
         c,
-        length=SEQUENCE,
+        length=None,
         training=True,
         target=None,
         batch_size=None,
         teacher_forcing=True,
         mappings_length=None,
+        epoch=None,
+        k=None,
     ):
 
-        # embeddings to gpu
         c = [embed.to(self.device) for embed in c]
 
         outputs = []
         previous = torch.zeros((batch_size, mappings_length), device=self.device)
-
-        # 使用常態分布初始化向量
-        # previous = torch.randn(
-        #     (batch_size, mappings_length), device=self.device, requires_grad=True
-        # )
-
         count = 0
 
         for embed in c:
             t = torch.tanh(self.fc_init(embed))
 
-            # if LSTM
             h1 = t[:, 0 : self.hidden_dim]
             h2 = t[:, self.hidden_dim : 2 * self.hidden_dim]
             c1 = t[:, 2 * self.hidden_dim : 3 * self.hidden_dim]
             c2 = t[:, 3 * self.hidden_dim : 4 * self.hidden_dim]
 
-            # if GRU
-            # h1 = t[:, 0 : self.hidden_dim]
-            # h2 = t[:, self.hidden_dim : 2 * self.hidden_dim]
+            if teacher_forcing:
+                k = k
+                ratio = self.inverse_sigmoid_schedule(epoch, k)
+            else:
+                ratio = None
 
             for _ in range(length // 2):
                 if training:
-                    if count > 0 and teacher_forcing:
+                    if count > 0 and random.random() < ratio:
                         previous = target[:, count - 1, :]
                     else:
                         previous = previous.detach()
@@ -81,10 +68,6 @@ class BottomLevelDecoderRNN(nn.Module):
                 h1, c1 = self.rnn_1(input, (h1, c1))
                 h2, c2 = self.rnn_2(h1, (h2, c2))
 
-                # if GRU
-                # h1 = self.rnn_1(input, h1)
-                # h2 = self.rnn_2(h1, h2)
-
                 previous = self.fc_out(h2)
                 outputs.append(previous)
 
@@ -94,7 +77,7 @@ class BottomLevelDecoderRNN(nn.Module):
 
         outputs = torch.stack(outputs, dim=1)
 
-        return outputs
+        return outputs, ratio
 
     def inverse_sigmoid_schedule(self, step, rate):
         return rate / (rate + np.exp(step / rate))
@@ -122,13 +105,14 @@ class AutoEncoder_DecoderRNN(nn.Module):
     def forward(
         self,
         c,
-        length=SEQUENCE,
+        length=None,
         training=True,
         target=None,
         batch_size=None,
         teacher_forcing=True,
         mappings_length=None,
         epoch=None,
+        k=None,
     ):
 
         c.to(self.device)
@@ -148,7 +132,7 @@ class AutoEncoder_DecoderRNN(nn.Module):
 
         for _ in range(length):
             if teacher_forcing:
-                k = 10
+                k = k
                 ratio = self.inverse_sigmoid_schedule(epoch, k)
             if training:
                 if count > 0 and random.random() < ratio:
@@ -178,7 +162,7 @@ class AutoEncoder_DecoderRNN(nn.Module):
 
         outputs = torch.stack(outputs, dim=1)
 
-        return outputs
+        return outputs, ratio
 
     def inverse_sigmoid_schedule(self, step, rate):
         return rate / (rate + np.exp(step / rate))

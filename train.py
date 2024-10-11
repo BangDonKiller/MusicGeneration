@@ -1,27 +1,16 @@
 import torch
 import torch.optim as optim
-import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset
 from torch.optim.lr_scheduler import ExponentialLR
 
 import math
 import numpy as np
-import matplotlib.pyplot as plt
+import os
 from tqdm import tqdm
 from model import MusicVAE
-from generate_dataset import inputs, targets, test_samples, mappings_length
+from loader import BatchGenerator
 
-
-def reconstruction_loss(output, target):
-    return F.cross_entropy(output, target)
-
-
-def kl_divergence_loss(mu, sigma, free_bits=33.3):
-    kl_loss = -0.5 * torch.sum(
-        1 + torch.log(sigma.pow(2)) - mu.pow(2) - sigma.pow(2), dim=1
-    )
-    kl_loss = torch.clamp(kl_loss - free_bits, min=0)
-    return kl_loss.mean()
+# from generate_dataset import inputs, targets, test_samples, mappings_length
+from midi_util import read_midi_files
 
 
 def beta_growth(epoch):
@@ -35,117 +24,115 @@ def beta_growth(epoch):
 def calculate_accuracy(output, target):
     output = torch.argmax(output, dim=2)
     target = torch.argmax(target, dim=2)
-
-    # print("output: ", output)
-    # print("target: ", target)
     accuracy = torch.mean((output == target).float())
     return accuracy.item()
+
+
+def create_log(check_path, model):
+    count = 1
+
+    check_path = path + str(count)
+    while os.path.exists(check_path):
+        count += 1
+        check_path = path + str(count)
+
+    os.mkdir(check_path)
+
+    # model == True (AE) or model == False (VAE)
+    if model:
+        log_file = open(
+            os.path.join(f"./model weight/log{count}/", "autoencoder.log"), "w+"
+        )
+    else:
+        log_file = open(os.path.join(f"./model weight/log{count}/", "VAE.log"), "w+")
+    print(
+        "epoch,rec_loss,kld_loss,total_loss,teacher_forcing ratio,total_accuracy,val_loss,val_accuracy",
+        file=log_file,
+    )
+    log_file.flush()
+
+    return count, log_file
 
 
 # 訓練函數
 def train_vae(
     model,
-    dataloader,
+    train_loader,
     optimizer,
     scheduler,
     num_epochs,
     device,
     teacher_forcing=True,
     train=True,
-    autoencoder=True,
+    log_file=None,
+    k=None,
 ):
     model.to(device)
-    model.train()
 
     global_step = 0  # 用於 Scheduled Sampling 計算
-    # max_beta = 0.2  # 最大β值
     beta = 0.0001  # 初始β值
-    beta_growth_rate = 1.099999  # β增長的指數率
-
-    recons_loss = []
-    KLDIV_loss = []
-    tot_loss = []
-    total_accuracy = []
-    tot_accuracy = []
 
     for epoch in range(num_epochs):
+        model.train()
         total_loss = 0
-        tot_recons_loss = 0
-        tot_KLDIV_loss = 0
+        total_recons_loss = 0
+        total_KLDIV_loss = 0
         total_accuracy = 0
 
-        # if epoch >= 10:
-        #     teacher_forcing = False
+        for batch_idx, batch_song in tqdm(enumerate(train_loader())):
+            batch_song = batch_song.to(device)
+            batch_song = batch_song.permute(2, 0, 1)
 
-        for x, y in tqdm(dataloader):
-            x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
+            output, song, mu, sigma = model(batch_song, teacher_forcing)
 
-            if autoencoder:
-                output = model(
-                    x, y, teacher_forcing=teacher_forcing, train=train, epoch=epoch
-                )
-            else:
-                output, mu, sigma = model(
-                    x, y, teacher_forcing=teacher_forcing, train=train
-                )
+            recons_loss = model.reconstruction_loss(output, batch_song)
+            KLDIV_loss = model.kl_divergence_loss(mu, sigma)
+            total_loss = recons_loss + KLDIV_loss
+            total_recons_loss += recons_loss
+            total_KLDIV_loss += KLDIV_loss
+            total_accuracy += calculate_accuracy(output, batch_song)
 
-            # 計算重構損失和KL散度損失
-            recon_loss = reconstruction_loss(output, y)
-
-            if autoencoder:
-                kl_loss = torch.zeros(1).cuda()
-            else:
-                kl_loss = kl_divergence_loss(mu, sigma)
-            loss = recon_loss + beta * kl_loss
-
-            # 計算準確度
-            accuracy = calculate_accuracy(output, y)
-
-            # 反向傳播
-            loss.backward()
+            total_loss.backward()
             optimizer.step()
-
-            tot_KLDIV_loss += kl_loss.item()
-            tot_recons_loss += recon_loss.item()
-            total_loss += loss.item()
-            total_accuracy += accuracy
-
-            # 更新學習率
             scheduler.step()
-
-            # 更新 β
-            # beta = min(max_beta, beta * beta_growth_rate)  # β的指數增長
-            beta = beta_growth(epoch)
             global_step += 1
 
-        tot_loss.append(total_loss)
-        recons_loss.append(tot_recons_loss)
-        KLDIV_loss.append(tot_KLDIV_loss)
-        tot_accuracy.append(total_accuracy / len(dataloader))
-
+            if batch_idx % 100 == 0:
+                print(
+                    f"Epoch {epoch + 1}/{num_epochs}, Batch {batch_idx + 1}/{len(train_loader)}, Loss: {total_loss}, Recons Loss: {recons_loss}, KLDIV Loss: {KLDIV_loss}"
+                )
         print(
-            f"Epoch {epoch + 1}/{num_epochs}, Loss: {total_loss / len(dataloader)}, Accuracy: {total_accuracy / len(dataloader)}"
+            f"Epoch {epoch + 1}/{num_epochs}, Loss: {total_loss / len(train_loader)}, Accuracy: {total_accuracy / len(train_loader)}"
         )
+
+        # Train log
+        # print(
+        #     epoch,
+        #     np.mean(recons_loss_list),
+        #     np.mean(KLDIV_loss_list),
+        #     np.mean(tot_loss_list),
+        #     np.mean(avg_accuracy_list),
+        #     sep=",",
+        #     file=log_file,
+        # )
+        # log_file.flush()
 
         if epoch % 10 == 0:
             torch.save(model.state_dict(), f"./model weight/epoch{epoch}.pth")
 
-    return recons_loss, KLDIV_loss, tot_loss, total_accuracy
+    return recons_loss_list, KLDIV_loss_list, tot_loss_list, avg_accuracy_list
 
 
 # 準備數據
-def prepare_data(train_data_tensor, target_data_tensor, test_data_tensor, batch_size):
-    train_dataset = TensorDataset(train_data_tensor, target_data_tensor)
-    test_dataset = TensorDataset(test_data_tensor, test_data_tensor)
-    dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    eval_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-    return dataloader, eval_loader
+def prepare_data(datass):
+    train_loader = BatchGenerator(datass, batch_size=batch_size, shuffle=True)
+    return train_loader
 
 
 if __name__ == "__main__":
     # 設定參數
-    input_dim = mappings_length
+    input_dim = 256
     lstm_hidden_dim = 512
     latent_dim = 32
     conductor_hidden_dim = 512
@@ -153,16 +140,28 @@ if __name__ == "__main__":
     decoder_hidden_dim = 1024
     output_dim = input_dim
     batch_size = 32
-    num_epochs = 50
+    num_epochs = 100
     initial_learning_rate = 1e-3  # 初始學習率
     final_learning_rate = 1e-5  # 最終學習率
+    K = 25  # Scheduled Sampling 的 K 值
 
-    autoencoder = True
-    teacher_forcing = False
-    TRAIN = False
+    teacher_forcing = True
+    TRAIN = True
+
     # 確定使用的設備
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+
+    datass, targets, note_sets = read_midi_files(
+        ["./dataset/mozart", "./dataset/Paganini"], None
+    )
+    note_size = (
+        len(note_sets["timing"]),
+        len(note_sets["duration"]),
+        len(note_sets["pitch"]),
+    )
+    train_loader = prepare_data(datass)
+    print("Data prepared.")
 
     # 初始化模型與優化器
     model = MusicVAE(
@@ -173,79 +172,33 @@ if __name__ == "__main__":
         conductor_output_dim,
         decoder_hidden_dim,
         output_dim,
-        batch_size,
-        mappings_length,
-        autoencoder,
+        note_size,
     )
     optimizer = optim.Adam(model.parameters(), lr=initial_learning_rate)
 
     # 定義學習率衰減調度器
     scheduler = ExponentialLR(optimizer, gamma=0.9999)  # 學習率以0.9999的速率指數衰減
 
-    data_tensor = inputs  # 這裡的inputs_tensor作為自動重建的輸入和目標
-    data_tensor = torch.tensor(data_tensor, dtype=torch.float32)
-
-    target_tensor = targets
-    target_tensor = torch.tensor(target_tensor, dtype=torch.float32)
-
-    test_tensor = test_samples[:256]
-    test_tensor = torch.tensor(test_tensor, dtype=torch.float32)
-
-    # 準備數據集和DataLoader
-    dataloader, eval_loader = prepare_data(
-        data_tensor, target_tensor, test_tensor, batch_size
-    )
-
     # 訓練模型
     if TRAIN:
+
+        # path = "./model weight/log"
+        # count, log_file = create_log(path, False)
+
         recon_loss, KL_loss, total_loss, total_accuracy = train_vae(
             model,
-            dataloader,
+            train_loader,
             optimizer,
             scheduler,
             num_epochs,
             device,
             teacher_forcing,
             train=TRAIN,
-            autoencoder=autoencoder,
+            log_file=None,
+            k=K,
         )
 
-        # 儲存模型
-        torch.save(model.state_dict(), f"./model weight/epoch{num_epochs}.pth")
-
-    else:
-        model.load_state_dict(torch.load(f"./model weight/epoch{num_epochs}.pth"))
-
-        # 生成樂曲
-        model.eval()
-        model.to(device)
-
-        total_accuracy = 0
-        total_loss = 0
-        for x, y in eval_loader:
-            x, y = x.to(device), y.to(device)
-            if autoencoder:
-                output = model(
-                    x, y, teacher_forcing=teacher_forcing, train=TRAIN, epoch=None
-                )
-            else:
-                output, mu, sigma = model(
-                    x, y, teacher_forcing=teacher_forcing, train=TRAIN, epoch=None
-                )
-
-            # 計算重構損失和KL散度損失
-            recon_loss = reconstruction_loss(output, y)
-
-            if autoencoder:
-                kl_loss = torch.zeros(1).cuda()
-            else:
-                kl_loss = kl_divergence_loss(mu, sigma)
-            loss = recon_loss + kl_loss
-
-            total_loss += loss.item()
-
-            accuracy = calculate_accuracy(output, y)
-            total_accuracy += accuracy
-
-        print(f"Accuracy: {total_accuracy / len(eval_loader)}")
-        print(f"Loss: {total_loss / len(eval_loader)}")
+        torch.save(
+            model.state_dict(),
+            f"./model weight/log{count}/VAE_epoch{num_epochs}.pth",
+        )

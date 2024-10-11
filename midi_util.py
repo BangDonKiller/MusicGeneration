@@ -1,7 +1,8 @@
-from IPython import embed
 import os
 from pretty_midi import PrettyMIDI, Instrument, Note
 import numpy as np
+
+from loader import BatchGenerator
 
 MAX_DURATION = 256
 
@@ -69,7 +70,6 @@ def encode_midi(midi_file, note_sets):
     duration : 音符的持續時間
     pitch : 音高
     """
-
     # 檢查是否有多個拍號
     if len(midi_file.time_signature_changes) > 1:
         return None, None
@@ -113,6 +113,7 @@ def pitch_augmentation(data, note_sets, shift=range(-3, 4)):
         d[:, -1] += s
         note_sets["pitch"] |= set(d[:, -1])
         datas.append(d)
+
     return datas
 
 
@@ -162,8 +163,9 @@ def read_midi_files(paths, valid_paths):
     """
     # Assert a path
     # assert isinstance(paths, list)
-    paths = [paths]
+    paths = paths
     datass = []  # a list of datas = (N, T, 3)
+    targets = []
     valid_datass = []  # a list of validation datass
     note_sets = {"timing": set(), "duration": set(), "pitch": set()}
 
@@ -177,36 +179,32 @@ def read_midi_files(paths, valid_paths):
                     if not isinstance(data, np.ndarray):
                         continue
 
-                    data = pitch_augmentation(data, note_sets)
+                    # data = pitch_augmentation(data, note_sets)
 
-                    for d in data:
-                        datas += shift_augmentation(d, 32, 50)
+                    # for d in data:
+                    #     datas += shift_augmentation(d, 32, 50)
 
-                        """
-                        shifted_data = shift_augmentation(d, 100, 50)
-                        if tempo < 180:
-                            datas += shifted_data
-                        else:
-                            for sd in shifted_data:
-                                datas += speed_augmentation(sd, note_sets)
-                        """
+                    datas += shift_augmentation(data, 32, 50)
+                    """
+                    shifted_data = shift_augmentation(d, 100, 50)
+                    if tempo < 180:
+                        datas += shifted_data
+                    else:
+                        for sd in shifted_data:
+                            datas += speed_augmentation(sd, note_sets)
+                    """
             # Append datas
             datass.append(datas)
 
     # train set
     read_midi_files_with_note_sets(paths, datass, note_sets)
-    # valid set
-    if valid_paths is not None:
-        valid_paths = [valid_paths]
-        read_midi_files_with_note_sets(valid_paths, valid_datass, note_sets)
-    #
-    # note_sets = {k: ["<padding>"] + list(v) for k, v in note_sets.items()}
+
+    note_sets = {k: ["<padding>"] + list(v) for k, v in note_sets.items()}
     note_sets = {k: ["/"] + list(v) for k, v in note_sets.items()}
     note_dicts = {
         key: {x: i for i, x in enumerate(value)} for key, value in note_sets.items()
     }
 
-    # NOTE: datass will be changed inplace
     def map_value_to_index(datass):
         # Map each real value to index
         for k in range(len(datass)):  # Loop over different folders
@@ -219,12 +217,12 @@ def read_midi_files(paths, valid_paths):
                 np.int64
             )  # Stack a folder's midi example into (N, T, 3)
 
-    # train set
     map_value_to_index(datass)
-    # valid set
-    if len(note_dicts) != 0:
-        map_value_to_index(valid_datass)
-    return datass, valid_datass, note_sets
+
+    # for i in range(len(datass)):
+    #     print(datass[i].shape)
+
+    return datass, targets, note_sets
 
 
 def dump_midi(data, note_sets, path):
@@ -254,9 +252,19 @@ def dump_midi(data, note_sets, path):
 
 
 if __name__ == "__main__":
-    data, _, note_sets = read_midi_files("./dataset/mozart", None)
-    print("data: ", data)
-    print("note_sets: ", note_sets)
+
+    # get folder name
+    paths = ["./dataset/mozart", "./dataset/Paganini"]
+
+    data, target, note_sets = read_midi_files(paths, None)
+
+    # train_loader = BatchGenerator(data, batch_size=32, shuffle=True)
+
+    # for batch_i, batch_song in enumerate(train_loader()):
+    #     print(batch_i, batch_song.shape)
+
+    # print("data: ", data)
+    # print("note_sets: ", note_sets)
     # data, note_sets = read_midi_files('/tmp2/andy920262/piano-midi.de')
     # data, note_sets = read_midi_files('/tmp2/andy920262/nottingham/midi')
     # dump_midi(data[-1], note_sets, 'output.mid')
