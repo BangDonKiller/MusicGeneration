@@ -132,7 +132,7 @@ def prepare_data(datass):
 
 if __name__ == "__main__":
     # 設定參數
-    input_dim = 256
+    input_dim = 512
     lstm_hidden_dim = 512
     latent_dim = 32
     conductor_hidden_dim = 512
@@ -171,7 +171,6 @@ if __name__ == "__main__":
         conductor_hidden_dim,
         conductor_output_dim,
         decoder_hidden_dim,
-        output_dim,
         note_size,
     )
     optimizer = optim.Adam(model.parameters(), lr=initial_learning_rate)

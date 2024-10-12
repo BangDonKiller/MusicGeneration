@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
-import random
+import torch.nn.functional as F
 
 # from generate_dataset import SEQUENCE
 
@@ -10,159 +10,68 @@ class BottomLevelDecoderRNN(nn.Module):
     def __init__(self, conductor_hidden_dim, hidden_dim, output_dim):
         super(BottomLevelDecoderRNN, self).__init__()
 
-        self.fc_init = nn.Linear(conductor_hidden_dim, hidden_dim * 4)
-
-        self.rnn_1 = nn.LSTMCell(conductor_hidden_dim + output_dim, hidden_dim)
-        self.rnn_2 = nn.LSTMCell(hidden_dim, hidden_dim)
-
-        self.fc_out = nn.Linear(hidden_dim, output_dim)
-
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.hidden_dim = hidden_dim
-
-    def forward(
-        self,
-        c,
-        length=None,
-        training=True,
-        target=None,
-        batch_size=None,
-        teacher_forcing=True,
-        mappings_length=None,
-        epoch=None,
-        k=None,
-    ):
-
-        c = [embed.to(self.device) for embed in c]
-
-        outputs = []
-        previous = torch.zeros((batch_size, mappings_length), device=self.device)
-        count = 0
-
-        for embed in c:
-            t = torch.tanh(self.fc_init(embed))
-
-            h1 = t[:, 0 : self.hidden_dim]
-            h2 = t[:, self.hidden_dim : 2 * self.hidden_dim]
-            c1 = t[:, 2 * self.hidden_dim : 3 * self.hidden_dim]
-            c2 = t[:, 3 * self.hidden_dim : 4 * self.hidden_dim]
-
-            if teacher_forcing:
-                k = k
-                ratio = self.inverse_sigmoid_schedule(epoch, k)
-            else:
-                ratio = None
-
-            for _ in range(length // 2):
-                if training:
-                    if count > 0 and random.random() < ratio:
-                        previous = target[:, count - 1, :]
-                    else:
-                        previous = previous.detach()
-                else:
-                    previous = previous.detach()
-
-                input = torch.cat([embed, previous], dim=1)
-
-                # if LSTM
-                h1, c1 = self.rnn_1(input, (h1, c1))
-                h2, c2 = self.rnn_2(h1, (h2, c2))
-
-                previous = self.fc_out(h2)
-                outputs.append(previous)
-
-                previous = outputs[-1]
-
-                count += 1
-
-        outputs = torch.stack(outputs, dim=1)
-
-        return outputs, ratio
-
-    def inverse_sigmoid_schedule(self, step, rate):
-        return rate / (rate + np.exp(step / rate))
-
-
-class AutoEncoder_DecoderRNN(nn.Module):
-    def __init__(self, latent_dim, hidden_dim, output_dim):
-        super(AutoEncoder_DecoderRNN, self).__init__()
-
-        # if LSTM
-        self.fc_init = nn.Linear(latent_dim, hidden_dim * 4)
-
-        # 將z轉換維度
-        self.fc_concat = nn.Linear(latent_dim + output_dim, output_dim)
-
-        # if LSTM
-        self.rnn_1 = nn.LSTMCell(output_dim, hidden_dim)
-        self.rnn_2 = nn.LSTMCell(hidden_dim, hidden_dim)
-
-        self.fc_out = nn.Linear(hidden_dim, output_dim)
+        self.lstm1 = nn.ModuleList(
+            [nn.LSTMCell(conductor_hidden_dim * 2, hidden_dim) for _ in range(3)]
+        )
+        self.context = nn.LSTMCell(hidden_dim * 3, hidden_dim)
+        self.output = nn.ModuleList([nn.Linear(hidden_dim, o) for o in output_dim])
+        self.hidden = nn.Linear(conductor_hidden_dim, conductor_hidden_dim * 2)
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.hidden_dim = hidden_dim
 
-    def forward(
-        self,
-        c,
-        length=None,
-        training=True,
-        target=None,
-        batch_size=None,
-        teacher_forcing=True,
-        mappings_length=None,
-        epoch=None,
-        k=None,
-    ):
+    def forward(self, c, embeddings, length=None, teacher_forcing=True, target=None):
 
-        c.to(self.device)
+        batch_size = c.size(0)
+        pointer = 0
 
         outputs = []
-        previous = torch.zeros((batch_size, mappings_length), device=self.device)
+        note = [torch.zeros(batch_size, dtype=torch.long) for _ in range(3)]
 
-        count = 0
+        if next(self.parameters()).is_cuda:
+            note = [n.cuda() for n in note]
 
-        t = torch.tanh(self.fc_init(c))
+        notes = [e(x) for e, x in zip(embeddings, note)]
 
-        # if LSTM
-        h1 = t[:, 0 : self.hidden_dim]
-        h2 = t[:, self.hidden_dim : 2 * self.hidden_dim]
-        c1 = t[:, 2 * self.hidden_dim : 3 * self.hidden_dim]
-        c2 = t[:, 3 * self.hidden_dim : 4 * self.hidden_dim]
+        for counts in range(length):
+            if counts % 16 == 0:
+                hidden = F.tanh(self.hidden(c[:, pointer, :]))
+                lstm1_hidden = [hidden for _ in range(3)]
+                lstm1_cell = [torch.zeros_like(lstm1_hidden[i]) for i in range(3)]
+                lstm2_hidden = [hidden for _ in range(3)]
+                context = hidden
+                context_cell = torch.zeros_like(context)
+                pointer += 1
 
-        for _ in range(length):
-            if teacher_forcing:
-                k = k
-                ratio = self.inverse_sigmoid_schedule(epoch, k)
-            if training:
-                if count > 0 and random.random() < ratio:
-                    previous = target[:, count - 1, :]
+            lstm1_hidden = [
+                l1(torch.cat([x, c[:, pointer, :]], -1), (hx, cx))
+                for l1, x, hx, cx in zip(self.lstm1, notes, lstm1_hidden, lstm1_cell)
+            ]
+            lstm1_hidden_unroll = [h for _, h in lstm1_hidden]
+
+            output = []
+
+            # note unrolling
+            for i in range(3):
+                context = self.context(
+                    torch.cat(lstm1_hidden_unroll, -1), (context, context_cell)
+                )
+                lstm2_hidden[i] = self.lstm1[i](
+                    torch.cat([context, c[:, pointer, :]], -1), lstm2_hidden[i]
+                )
+                output.append(self.output[i](lstm1_hidden_unroll[i] + lstm2_hidden[i]))
+
+                if teacher_forcing:
+                    note[i] = embeddings[i](target[i, :, counts])
                 else:
-                    previous = previous.detach()
-            else:
-                previous = previous.detach()
+                    note[i] = embeddings[i](output[i].max(-1)[1].detach())
+                lstm1_hidden_unroll[i] = self.lstm1[i](
+                    torch.cat([note[i], c[:, pointer, :]], -1), lstm1_hidden_unroll[i]
+                )
 
-            if count == 0:
-                input = torch.cat([c, previous], dim=1)
-                input = self.fc_concat(input)
+            outputs.append(output, 1)
+        outputs = [torch.stack(o).transpose(0, 1) for o in zip(*outputs)]
 
-            else:
-                input = previous
-
-            # if LSTM
-            h1, c1 = self.rnn_1(input, (h1, c1))
-            h2, c2 = self.rnn_2(h1, (h2, c2))
-
-            previous = torch.tanh(self.fc_out(h2))
-            outputs.append(previous)
-
-            previous = outputs[-1]
-
-            count += 1
-
-        outputs = torch.stack(outputs, dim=1)
-
-        return outputs, ratio
+        return outputs
 
     def inverse_sigmoid_schedule(self, step, rate):
         return rate / (rate + np.exp(step / rate))

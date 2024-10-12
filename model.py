@@ -16,7 +16,6 @@ class MusicVAE(nn.Module):
         conductor_hidden_dim,
         conductor_output_dim,
         decoder_hidden_dim,
-        output_dim,
         note_size,
     ):
         super(MusicVAE, self).__init__()
@@ -28,15 +27,17 @@ class MusicVAE(nn.Module):
             latent_dim, conductor_hidden_dim, conductor_output_dim
         )
         self.decoder = BottomLevelDecoderRNN(
-            conductor_hidden_dim, decoder_hidden_dim, output_dim
+            conductor_hidden_dim, decoder_hidden_dim, note_size
         )
 
     def forward(self, x, teacher_forcing=True):
 
         mu, sigma = self.encoder(x, self.embeddings)
         z = mu + sigma * torch.randn_like(mu)
-        # c = self.conductor(z, batch_size=self.batch_size)
-        # output, ratio = self.decoder()
+        c = self.conductor(z)
+        reconstruct = self.decoder(
+            c, self.embeddings, length=32, teacher_forcing=teacher_forcing
+        )
 
         song = [o.max(-1)[-1] for o in output]
         song = torch.stack(song).detach()
