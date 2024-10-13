@@ -5,11 +5,9 @@ from torch.optim.lr_scheduler import ExponentialLR
 import math
 import numpy as np
 import os
-from tqdm import tqdm
+from progressbar import ProgressBar, ETA, Bar, FormatLabel
 from model import MusicVAE
 from loader import BatchGenerator
-
-# from generate_dataset import inputs, targets, test_samples, mappings_length
 from midi_util import read_midi_files, dump_midi
 
 
@@ -74,7 +72,12 @@ def train_vae(
         total_kld = []
         total_acc = []
 
-        for batch_idx, batch_song in tqdm(enumerate(train_loader())):
+        widgets = [FormatLabel(""), " ", Bar("=", "[", "]"), " - ", ETA()]
+        pbar = ProgressBar(widgets=widgets, maxval=len(train_loader))
+
+        pbar.start()
+
+        for batch_idx, batch_song in enumerate(train_loader()):
             batch_song = batch_song.to(device)
             batch_song = batch_song.permute(2, 0, 1)
 
@@ -102,9 +105,20 @@ def train_vae(
             scheduler.step()
             global_step += 1
 
+            widgets[0] = FormatLabel(
+                "Epoch: {}/{} | Batch: {}/{}".format(
+                    epoch + 1,
+                    num_epochs,
+                    batch_idx * batch_size + batch_size,
+                    len(train_loader),
+                )
+            )
+            pbar.update(batch_idx * batch_size + batch_size)
+
+        pbar.finish()
+
         print(
-            "Epoch: {} | Reconstruction Loss: {:.4f} | KLD Loss: {:.4f} | Total Loss: {:.4f} | beta: {:.4f} | Accuracy: {:.4f}".format(
-                epoch,
+            "Reconstruction Loss: {:.4f} | KLD Loss: {:.4f} | Total Loss: {:.4f} | beta: {:.4f} | Accuracy: {:.4f}".format(
                 np.mean(total_rec),
                 np.mean(total_kld),
                 np.mean(total_loss),
@@ -137,20 +151,20 @@ if __name__ == "__main__":
     decoder_hidden_dim = 1024
     output_dim = input_dim
     batch_size = 32
-    num_epochs = 50
+    num_epochs = 100
     initial_learning_rate = 1e-3  # 初始學習率
     final_learning_rate = 1e-5  # 最終學習率
     K = 25  # Scheduled Sampling 的 K 值
 
     teacher_forcing = True
-    TRAIN = False
+    TRAIN = True
 
     # 確定使用的設備
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     datass, targets, note_sets = read_midi_files(
-        ["./dataset/mozart", "./dataset/Paganini"], None
+        ["./dataset/mozart", "./dataset/Paganini", "./dataset/nottingham1"], None
     )
     note_size = (
         len(note_sets["timing"]),
@@ -177,10 +191,6 @@ if __name__ == "__main__":
 
     # 訓練模型
     if TRAIN:
-
-        # path = "./model weight/log"
-        # count, log_file = create_log(path, False)
-
         rec_loss, KL_loss, total_loss, total_acc = train_vae(
             model,
             train_loader,
@@ -190,13 +200,7 @@ if __name__ == "__main__":
             device,
             teacher_forcing,
         )
-
         print("Finished training.")
-
-        # torch.save(
-        #     model.state_dict(),
-        #     f"./model weight/log{count}/VAE_epoch{num_epochs}.pth",
-        # )
     else:
         # load model
         model.load_state_dict(torch.load("./model weight/epoch50.pth"))

@@ -96,7 +96,7 @@ def encode_midi(midi_file, note_sets):
         note_sets["timing"].add(timing)
         note_sets["duration"].add(duration)
         note_sets["pitch"].add(pitch)
-    return np.array(data), midi_file.estimate_tempo()
+    return np.array(data)
 
 
 def pitch_augmentation(data, note_sets, shift=range(-3, 4)):
@@ -173,9 +173,9 @@ def read_midi_files(paths, valid_paths):
         for path in paths:
             datas = []
             for filename in os.listdir(path):
-                if filename.endswith("mid"):
+                if filename.endswith("mid") or filename.endswith("midi"):
                     midi_file = PrettyMIDI(os.path.join(path, filename))
-                    data, tempo = encode_midi(midi_file, note_sets)
+                    data = encode_midi(midi_file, note_sets)
                     if not isinstance(data, np.ndarray):
                         continue
 

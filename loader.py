@@ -12,7 +12,7 @@ class BatchGenerator:
         self.datas = copy.deepcopy(datas)
         self.batch_size = batch_size
         self.shuffle = shuffle
-        self.ratio = [0.3, 0.7]  # ratio of nottingham, jdb, piano
+        self.ratio = [0.3, 0.5, 0.2]  # ratio of nottingham, jdb, piano
         print(self.ratio)
         # Get max length
         max_length = len(max(datas, key=len))
