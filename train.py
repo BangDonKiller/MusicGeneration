@@ -10,7 +10,7 @@ from model import MusicVAE
 from loader import BatchGenerator
 
 # from generate_dataset import inputs, targets, test_samples, mappings_length
-from midi_util import read_midi_files
+from midi_util import read_midi_files, dump_midi
 
 
 def beta_growth(epoch):
@@ -60,9 +60,6 @@ def train_vae(
     num_epochs,
     device,
     teacher_forcing=True,
-    train=True,
-    log_file=None,
-    k=None,
 ):
     model.to(device)
 
@@ -146,7 +143,7 @@ if __name__ == "__main__":
     K = 25  # Scheduled Sampling 的 K 值
 
     teacher_forcing = True
-    TRAIN = True
+    TRAIN = False
 
     # 確定使用的設備
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -192,9 +189,6 @@ if __name__ == "__main__":
             num_epochs,
             device,
             teacher_forcing,
-            train=TRAIN,
-            log_file=None,
-            k=K,
         )
 
         print("Finished training.")
@@ -203,3 +197,12 @@ if __name__ == "__main__":
         #     model.state_dict(),
         #     f"./model weight/log{count}/VAE_epoch{num_epochs}.pth",
         # )
+    else:
+        # load model
+        model.load_state_dict(torch.load("./model weight/epoch50.pth"))
+        model.to(device)
+        model.eval()
+
+        # generate
+        output = model.sample(32)
+        dump_midi(output, note_sets, "output.mid")
