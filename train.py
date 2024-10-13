@@ -21,11 +21,8 @@ def beta_growth(epoch):
     return (end - start) / (1 + math.exp(-k * (epoch - x0))) + start
 
 
-def calculate_accuracy(output, target):
-    output = torch.argmax(output, dim=2)
-    target = torch.argmax(target, dim=2)
-    accuracy = torch.mean((output == target).float())
-    return accuracy.item()
+def calculate_accuracy(predict, target):
+    return (predict == target).float().mean().item()
 
 
 def create_log(check_path, model):
@@ -74,54 +71,57 @@ def train_vae(
 
     for epoch in range(num_epochs):
         model.train()
-        total_loss = 0
-        total_recons_loss = 0
-        total_KLDIV_loss = 0
-        total_accuracy = 0
+
+        total_loss = []
+        total_rec = []
+        total_kld = []
+        total_acc = []
 
         for batch_idx, batch_song in tqdm(enumerate(train_loader())):
             batch_song = batch_song.to(device)
             batch_song = batch_song.permute(2, 0, 1)
 
             optimizer.zero_grad()
-            output, song, mu, sigma = model(batch_song, teacher_forcing)
+            output, song, mu, sigma = model(
+                batch_song, truth=batch_song, teacher_forcing=teacher_forcing
+            )
 
             recons_loss = model.reconstruction_loss(output, batch_song)
             KLDIV_loss = model.kl_divergence_loss(mu, sigma)
-            total_loss = recons_loss + KLDIV_loss
-            total_recons_loss += recons_loss
-            total_KLDIV_loss += KLDIV_loss
-            total_accuracy += calculate_accuracy(output, batch_song)
+            if KLDIV_loss < 0:
+                print("KLDIV_loss < 0")
 
-            total_loss.backward()
+            loss = recons_loss + beta * KLDIV_loss
+
+            total_loss.append(loss.item())
+            total_kld.append(KLDIV_loss.item())
+            total_rec.append(recons_loss.item())
+            total_acc.append(calculate_accuracy(song, batch_song))
+
+            beta = beta_growth(batch_idx)
+
+            loss.backward()
             optimizer.step()
             scheduler.step()
             global_step += 1
 
-            if batch_idx % 100 == 0:
-                print(
-                    f"Epoch {epoch + 1}/{num_epochs}, Batch {batch_idx + 1}/{len(train_loader)}, Loss: {total_loss}, Recons Loss: {recons_loss}, KLDIV Loss: {KLDIV_loss}"
-                )
         print(
-            f"Epoch {epoch + 1}/{num_epochs}, Loss: {total_loss / len(train_loader)}, Accuracy: {total_accuracy / len(train_loader)}"
+            "Epoch: {} | Reconstruction Loss: {:.4f} | KLD Loss: {:.4f} | Total Loss: {:.4f} | beta: {:.4f} | Accuracy: {:.4f}".format(
+                epoch,
+                np.mean(total_rec),
+                np.mean(total_kld),
+                np.mean(total_loss),
+                beta,
+                np.mean(total_acc),
+            )
         )
-
-        # Train log
-        # print(
-        #     epoch,
-        #     np.mean(recons_loss_list),
-        #     np.mean(KLDIV_loss_list),
-        #     np.mean(tot_loss_list),
-        #     np.mean(avg_accuracy_list),
-        #     sep=",",
-        #     file=log_file,
-        # )
-        # log_file.flush()
 
         if epoch % 10 == 0:
             torch.save(model.state_dict(), f"./model weight/epoch{epoch}.pth")
 
-    return recons_loss_list, KLDIV_loss_list, tot_loss_list, avg_accuracy_list
+    torch.save(model.state_dict(), f"./model weight/epoch{epoch+1}.pth")
+
+    return total_rec, total_kld, total_loss, total_acc
 
 
 # 準備數據
@@ -140,7 +140,7 @@ if __name__ == "__main__":
     decoder_hidden_dim = 1024
     output_dim = input_dim
     batch_size = 32
-    num_epochs = 100
+    num_epochs = 50
     initial_learning_rate = 1e-3  # 初始學習率
     final_learning_rate = 1e-5  # 最終學習率
     K = 25  # Scheduled Sampling 的 K 值
@@ -184,7 +184,7 @@ if __name__ == "__main__":
         # path = "./model weight/log"
         # count, log_file = create_log(path, False)
 
-        recon_loss, KL_loss, total_loss, total_accuracy = train_vae(
+        rec_loss, KL_loss, total_loss, total_acc = train_vae(
             model,
             train_loader,
             optimizer,
@@ -197,7 +197,9 @@ if __name__ == "__main__":
             k=K,
         )
 
-        torch.save(
-            model.state_dict(),
-            f"./model weight/log{count}/VAE_epoch{num_epochs}.pth",
-        )
+        print("Finished training.")
+
+        # torch.save(
+        #     model.state_dict(),
+        #     f"./model weight/log{count}/VAE_epoch{num_epochs}.pth",
+        # )

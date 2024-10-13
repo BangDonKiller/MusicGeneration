@@ -30,18 +30,18 @@ class MusicVAE(nn.Module):
             conductor_hidden_dim, decoder_hidden_dim, note_size
         )
 
-    def forward(self, x, teacher_forcing=True):
+    def forward(self, x, truth, teacher_forcing=True):
 
-        mu, sigma = self.encoder(x, self.embeddings)
-        z = mu + sigma * torch.randn_like(mu)
+        mu, logvar = self.encoder(x, self.embeddings)
+        z = mu + logvar * torch.randn_like(mu)
         c = self.conductor(z)
         reconstruct = self.decoder(
-            c, self.embeddings, length=32, teacher_forcing=teacher_forcing
+            c, self.embeddings, length=32, teacher_forcing=teacher_forcing, target=truth
         )
 
-        song = [o.max(-1)[-1] for o in output]
+        song = [o.max(-1)[-1] for o in reconstruct]
         song = torch.stack(song).detach()
-        return output, song, mu, sigma
+        return reconstruct, song, mu, logvar
 
     def reconstruction_loss(self, predict, target):
         loss = 0
@@ -50,5 +50,5 @@ class MusicVAE(nn.Module):
                 loss += F.cross_entropy(p[:, i], t[:, i])
         return loss
 
-    def kl_divergence_loss(mu, sigma):
-        return -0.5 * torch.sum(1 + sigma - mu.pow(2) - sigma.pow(2))
+    def kl_divergence_loss(self, mu, logvar):
+        return -0.5 * torch.sum(1 + logvar - mu.pow(2) - torch.exp(logvar))

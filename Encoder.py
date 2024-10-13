@@ -25,7 +25,7 @@ class BidirectionalEncoder(nn.Module):
         self.linear = nn.Linear(5 * lstm_hidden_dim, lstm_hidden_dim)
 
         self.mu = nn.Linear(lstm_hidden_dim, latent_dim)
-        self.sigma = nn.Linear(lstm_hidden_dim, latent_dim)
+        self.logvar = nn.Linear(lstm_hidden_dim, latent_dim)
 
     def forward(self, x, embeddings):
         # x的形狀是 (batch_size, seq_len, input_dim)
@@ -58,6 +58,6 @@ class BidirectionalEncoder(nn.Module):
         linear_out = self.linear(cat_hidden)
 
         mu = self.mu(linear_out)
-        sigma = self.sigma(linear_out)
+        logvar = self.logvar(linear_out)
 
-        return mu, sigma
+        return mu, logvar

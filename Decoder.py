@@ -14,6 +14,12 @@ class BottomLevelDecoderRNN(nn.Module):
             [nn.LSTMCell(conductor_hidden_dim * 2, hidden_dim) for _ in range(3)]
         )
         self.context = nn.LSTMCell(hidden_dim * 3, hidden_dim)
+        self.lstm2 = nn.ModuleList(
+            [
+                nn.LSTMCell(conductor_hidden_dim + hidden_dim, hidden_dim)
+                for _ in range(3)
+            ]
+        )
         self.output = nn.ModuleList([nn.Linear(hidden_dim, o) for o in output_dim])
         self.hidden = nn.Linear(conductor_hidden_dim, conductor_hidden_dim * 2)
 
@@ -38,15 +44,20 @@ class BottomLevelDecoderRNN(nn.Module):
                 lstm1_hidden = [hidden for _ in range(3)]
                 lstm1_cell = [torch.zeros_like(lstm1_hidden[i]) for i in range(3)]
                 lstm2_hidden = [hidden for _ in range(3)]
+                lstm2_cell = [torch.zeros_like(lstm2_hidden[i]) for i in range(3)]
                 context = hidden
                 context_cell = torch.zeros_like(context)
-                pointer += 1
+                if counts != 0:
+                    pointer += 1
 
             lstm1_hidden = [
-                l1(torch.cat([x, c[:, pointer, :]], -1), (hx, cx))
+                l1(torch.cat([x, c[:, pointer, :]], -1), (hx, cx))[0]
                 for l1, x, hx, cx in zip(self.lstm1, notes, lstm1_hidden, lstm1_cell)
             ]
-            lstm1_hidden_unroll = [h for _, h in lstm1_hidden]
+            lstm1_hidden_unroll = [h for h in lstm1_hidden]
+            lstm1_hidden_unroll_cell = [
+                torch.zeros_like(h) for h in lstm1_hidden_unroll
+            ]
 
             output = []
 
@@ -54,21 +65,23 @@ class BottomLevelDecoderRNN(nn.Module):
             for i in range(3):
                 context = self.context(
                     torch.cat(lstm1_hidden_unroll, -1), (context, context_cell)
-                )
-                lstm2_hidden[i] = self.lstm1[i](
-                    torch.cat([context, c[:, pointer, :]], -1), lstm2_hidden[i]
-                )
+                )[0]
+                lstm2_hidden[i] = self.lstm2[i](
+                    torch.cat([context, c[:, pointer, :]], -1),
+                    (lstm2_hidden[i], lstm2_cell[i]),
+                )[0]
                 output.append(self.output[i](lstm1_hidden_unroll[i] + lstm2_hidden[i]))
 
                 if teacher_forcing:
                     note[i] = embeddings[i](target[i, :, counts])
                 else:
                     note[i] = embeddings[i](output[i].max(-1)[1].detach())
-                lstm1_hidden_unroll[i] = self.lstm1[i](
-                    torch.cat([note[i], c[:, pointer, :]], -1), lstm1_hidden_unroll[i]
-                )
+                lstm1_hidden_unroll[i] = self.lstm1[1](
+                    torch.cat([note[i], c[:, pointer, :]], -1),
+                    (lstm1_hidden_unroll[i], lstm1_hidden_unroll_cell[i]),
+                )[0]
 
-            outputs.append(output, 1)
+            outputs.append(output)
         outputs = [torch.stack(o).transpose(0, 1) for o in zip(*outputs)]
 
         return outputs
