@@ -157,14 +157,14 @@ if __name__ == "__main__":
     K = 25  # Scheduled Sampling 的 K 值
 
     teacher_forcing = True
-    TRAIN = True
+    TRAIN = False
 
     # 確定使用的設備
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     datass, targets, note_sets = read_midi_files(
-        ["./dataset/mozart", "./dataset/Paganini", "./dataset/nottingham1"], None
+        ["./dataset/lakh1", "./dataset/nottingham1", "./dataset/maestro1"], None
     )
     note_size = (
         len(note_sets["timing"]),
@@ -203,10 +203,10 @@ if __name__ == "__main__":
         print("Finished training.")
     else:
         # load model
-        model.load_state_dict(torch.load("./model weight/epoch50.pth"))
+        model.load_state_dict(torch.load("./model weight/epoch100.pth"))
         model.to(device)
         model.eval()
 
         # generate
         output = model.sample(32)
-        dump_midi(output, note_sets, "output.mid")
+        dump_midi(output, note_sets, "./output song/output.mid")
